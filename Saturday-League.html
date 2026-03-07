@@ -1,0 +1,698 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Saturday League Singles</title>
+  
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <style>
+    body, html { margin: 0; padding: 0; height: 100%; background: #1a1612; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useCallback } = React;
+
+    const STORAGE_PREFIX = "badminton-sl:";
+    const checkGameOver = (s1, s2) => {
+      if (s1 >= 21 && s1 - s2 >= 2) return 1;
+      if (s2 >= 21 && s2 - s1 >= 2) return 2;
+      if (s1 === 30) return 1;
+      if (s2 === 30) return 2;
+      return 0;
+    };
+    const genId = () => Math.random().toString(36).slice(2, 10);
+    const shuffle = (arr) => {
+      const a = [...arr];
+      for (let i = a.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [a[i], a[j]] = [a[j], a[i]];
+      }
+      return a;
+    };
+
+    async function load(key, fb) {
+      try { 
+        const r = localStorage.getItem(STORAGE_PREFIX + key); 
+        return r ? JSON.parse(r) : fb; 
+      } catch { return fb; }
+    }
+    async function save(key, val) {
+      try { localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(val)); } catch {}
+    }
+
+    const c = {
+      bg: "#1a1612", bg2: "#211d18", surface: "#2a241e", surfaceHover: "#342d25",
+      card: "#2e2822", cardHover: "#3a332b", border: "#3d352b", borderLight: "#4a4035",
+      accent: "#8aab7a", accentDim: "#6b8c5e", accentBright: "#a3c494",
+      warm: "#c4956a", warmDim: "#a87a52", red: "#c27c7c",
+      yellow: "#c4b46a", text: "#e8e0d4", textMed: "#b8ae9e",
+      textDim: "#8a8070", textMute: "#5e5648",
+      court: { base: "#dfc89e", dark: "#d4ba8c", border: "#c4a873" },
+    };
+
+    const Badge = ({ children, color = c.accent }) => (
+      <span style={{
+        display: "inline-flex", alignItems: "center", padding: "2px 8px", borderRadius: 6,
+        fontSize: 10, fontWeight: 700, letterSpacing: 0.5, textTransform: "uppercase",
+        background: color + "20", color, border: `1px solid ${color}30`,
+      }}>{children}</span>
+    );
+
+    const Btn = ({ children, onClick, v = "primary", disabled, small, style = {} }) => {
+      const base = {
+        padding: small ? "5px 12px" : "9px 20px", borderRadius: 8, fontWeight: 600,
+        fontSize: small ? 11 : 13, cursor: disabled ? "not-allowed" : "pointer",
+        border: "none", transition: "all 0.15s", fontFamily: "'DM Sans', sans-serif",
+        opacity: disabled ? 0.35 : 1, letterSpacing: 0.2,
+      };
+      const vs = {
+        primary: { background: c.accent, color: "#1a1612" },
+        danger: { background: c.red + "25", color: c.red, border: `1px solid ${c.red}30` },
+        ghost: { background: c.surface, color: c.textMed, border: `1px solid ${c.border}` },
+        warm: { background: c.warm, color: "#1a1612" },
+        warning: { background: c.yellow + "25", color: c.yellow, border: `1px solid ${c.yellow}30` },
+      };
+      return <button onClick={onClick} disabled={disabled} style={{ ...base, ...vs[v], ...style }}>{children}</button>;
+    };
+
+    const IconBtn = ({ onClick, title, children, color = c.textDim }) => (
+      <button onClick={onClick} title={title} style={{
+        background: "none", border: "none", color, cursor: "pointer", padding: 4,
+        fontSize: 16, lineHeight: 1, display: "flex", alignItems: "center", justifyContent: "center",
+        borderRadius: 4, width: 26, height: 26,
+      }}>{children}</button>
+    );
+
+    function App() {
+      const [loaded, setLoaded] = useState(false);
+      const [players, setPlayers] = useState([]);
+      const [queue, setQueue] = useState([]);
+      const [queueStarted, setQueueStarted] = useState(false);
+      const [currentMatch, setCurrentMatch] = useState(null);
+      const [matchHistory, setMatchHistory] = useState([]);
+      const [winStreaks, setWinStreaks] = useState({});
+      const [nameInput, setNameInput] = useState("");
+      const [allTimeStats, setAllTimeStats] = useState({});
+      const [h2hPlayer, setH2hPlayer] = useState(null);
+      const [tab, setTab] = useState("queue");
+      const [showSummary, setShowSummary] = useState(false);
+      const [dragIdx, setDragIdx] = useState(null);
+      const [dragOverIdx, setDragOverIdx] = useState(null);
+      const [dragTarget, setDragTarget] = useState(null);
+
+      useEffect(() => {
+        (async () => {
+          const stats = await load("allTimeStats", {});
+          const session = await load("session", null);
+          setAllTimeStats(stats);
+          if (session) {
+            setPlayers(session.players || []); setQueue(session.queue || []);
+            setQueueStarted(session.queueStarted || false);
+            setCurrentMatch(session.currentMatch || null);
+            setMatchHistory(session.matchHistory || []); setWinStreaks(session.winStreaks || {});
+          }
+          setLoaded(true);
+        })();
+      }, []);
+
+      const persist = useCallback((p, q, qs, cm, mh, ws) => {
+        save("session", { players: p, queue: q, queueStarted: qs, currentMatch: cm, matchHistory: mh, winStreaks: ws });
+      }, []);
+      const persistStats = useCallback((s) => save("allTimeStats", s), []);
+
+      const addPlayer = () => {
+        const raw = nameInput.trim();
+        if (!raw) return;
+        const name = raw.charAt(0).toUpperCase() + raw.slice(1);
+        if (players.find(p => p.name.toLowerCase() === name.toLowerCase())) return;
+        const entry = { name, paused: false };
+        const np = [...players, entry];
+        const nq = queueStarted ? [...queue, entry] : queue;
+        setPlayers(np); setQueue(nq); setNameInput("");
+        persist(np, nq, queueStarted, currentMatch, matchHistory, winStreaks);
+      };
+
+      const removeFromQueue = (name) => {
+        const np = players.filter(p => p.name !== name);
+        const nq = queue.filter(p => p.name !== name);
+        setPlayers(np);
+        setQueue(nq); 
+        persist(np, nq, queueStarted, currentMatch, matchHistory, winStreaks);
+      };
+
+      const togglePause = (name) => {
+        const nq = queue.map(p => p.name === name ? { ...p, paused: !p.paused } : p);
+        setQueue(nq); persist(players, nq, queueStarted, currentMatch, matchHistory, winStreaks);
+      };
+
+      const moveInQueue = (idx, dir) => {
+        const nq = [...queue]; const t2 = idx + dir;
+        if (t2 < 0 || t2 >= nq.length) return;
+        [nq[idx], nq[t2]] = [nq[t2], nq[idx]];
+        setQueue(nq); persist(players, nq, queueStarted, currentMatch, matchHistory, winStreaks);
+      };
+
+      const generateQueue = () => {
+        const shuffled = shuffle(players);
+        setQueue(shuffled); setQueueStarted(true);
+        setCurrentMatch(null); setMatchHistory([]); setWinStreaks({});
+        persist(players, shuffled, true, null, [], {});
+      };
+
+      const getNextPlayers = (q) => {
+        const r = [];
+        for (let i = 0; i < q.length; i++) { if (!q[i].paused) { r.push(i); if (r.length === 2) break; } }
+        return r;
+      };
+
+      const startNextMatch = () => {
+        const idx = getNextPlayers(queue);
+        if (idx.length < 2) return;
+        const match = { id: genId(), player1: queue[idx[0]].name, player2: queue[idx[1]].name, score1: 0, score2: 0 };
+        const nq = queue.filter((_, i) => !idx.includes(i));
+        setCurrentMatch(match); setQueue(nq);
+        persist(players, nq, queueStarted, match, matchHistory, winStreaks);
+        setTab("match");
+      };
+
+      const swapOnCourt = (queueIdx, side) => {
+        if (!currentMatch) return;
+        const incoming = queue[queueIdx];
+        const outName = side === "left" ? currentMatch.player1 : currentMatch.player2;
+        const nq = [...queue.filter((_, i) => i !== queueIdx), { name: outName, paused: false }];
+        const nm = side === "left"
+          ? { ...currentMatch, player1: incoming.name, score1: 0, score2: 0 }
+          : { ...currentMatch, player2: incoming.name, score1: 0, score2: 0 };
+        setCurrentMatch(nm); setQueue(nq);
+        persist(players, nq, queueStarted, nm, matchHistory, winStreaks);
+        setDragIdx(null); setDragTarget(null);
+      };
+
+      const updateScore = (player, delta) => {
+        if (!currentMatch) return;
+        setCurrentMatch(m => {
+          const key = player === 1 ? "score1" : "score2";
+          const ns = Math.max(0, m[key] + delta);
+          const u = { ...m, [key]: ns };
+          persist(players, queue, queueStarted, u, matchHistory, winStreaks);
+          return u;
+        });
+      };
+
+      const finishMatch = () => {
+        if (!currentMatch) return;
+        const w = checkGameOver(currentMatch.score1, currentMatch.score2);
+        if (!w) return;
+        const wn = w === 1 ? currentMatch.player1 : currentMatch.player2;
+        const ln = w === 1 ? currentMatch.player2 : currentMatch.player1;
+        const wsc = w === 1 ? currentMatch.score1 : currentMatch.score2;
+        const lsc = w === 1 ? currentMatch.score2 : currentMatch.score1;
+        const result = { ...currentMatch, winner: wn, loser: ln, winnerScore: wsc, loserScore: lsc, timestamp: Date.now() };
+        const nh = [...matchHistory, result];
+        const nws = { ...winStreaks }; nws[wn] = (nws[wn] || 0) + 1; nws[ln] = 0;
+        let nq = [...queue];
+        if (nws[wn] >= 2) { nq = [...nq, { name: wn, paused: false }, { name: ln, paused: false }]; nws[wn] = 0; }
+        else { nq = [{ name: wn, paused: false }, ...nq, { name: ln, paused: false }]; }
+        const ns = { ...allTimeStats };
+        for (const n of [wn, ln]) { if (!ns[n]) ns[n] = { wins: 0, losses: 0, pointsFor: 0, pointsAgainst: 0, h2h: {} }; }
+        ns[wn].wins++; ns[wn].pointsFor += wsc; ns[wn].pointsAgainst += lsc;
+        ns[ln].losses++; ns[ln].pointsFor += lsc; ns[ln].pointsAgainst += wsc;
+        if (!ns[wn].h2h[ln]) ns[wn].h2h[ln] = { w: 0, l: 0 };
+        if (!ns[ln].h2h[wn]) ns[ln].h2h[wn] = { w: 0, l: 0 };
+        ns[wn].h2h[ln].w++; ns[ln].h2h[wn].l++;
+        setMatchHistory(nh); setWinStreaks(nws); setQueue(nq);
+        setCurrentMatch(null); setAllTimeStats(ns);
+        persist(players, nq, queueStarted, null, nh, nws); persistStats(ns);
+        setTab("queue");
+      };
+
+      const endDay = () => setShowSummary(true);
+      
+      const closeSummary = () => {
+        setShowSummary(false); setPlayers([]); setQueue([]); setQueueStarted(false);
+        setCurrentMatch(null); setMatchHistory([]); setWinStreaks({});
+        persist([], [], false, null, [], {});
+      };
+
+      // NEW: Reset All function for the top right button
+      const resetAll = () => {
+        if (window.confirm("Are you sure you want to reset the entire session? This will clear the queue and match history.")) {
+          setPlayers([]); setQueue([]); setQueueStarted(false);
+          setCurrentMatch(null); setMatchHistory([]); setWinStreaks({});
+          persist([], [], false, null, [], {});
+          setTab("queue");
+        }
+      };
+
+      const getSummaryText = () => {
+        const date = new Date().toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+        const played = [...new Set(matchHistory.flatMap(m => [m.winner, m.loser]))];
+        const allNames = [...new Set([...players.map(p => p.name), ...played])];
+        const didntPlay = allNames.filter(n => !played.includes(n));
+        const ss = {}; played.forEach(n => { ss[n] = { w: 0, l: 0, pf: 0, pa: 0 }; });
+        matchHistory.forEach(m => {
+          ss[m.winner].w++; ss[m.winner].pf += m.winnerScore; ss[m.winner].pa += m.loserScore;
+          ss[m.loser].l++; ss[m.loser].pf += m.loserScore; ss[m.loser].pa += m.winnerScore;
+        });
+        const sorted = Object.entries(ss).sort((a, b) => b[1].w - a[1].w || (b[1].pf - b[1].pa) - (a[1].pf - a[1].pa));
+        let t2 = `SATURDAY LEAGUE — ${date}\n${"=".repeat(50)}\n\n`;
+        t2 += `Attendance: ${allNames.length} | Played: ${played.length} | Matches: ${matchHistory.length}\n\n`;
+        t2 += `ATTENDANCE\n${"-".repeat(30)}\n`;
+        allNames.forEach(n => { t2 += `  ${n}${didntPlay.includes(n) ? "  (did not play)" : ""}\n`; });
+        t2 += `\nSTANDINGS\n${"-".repeat(30)}\n`;
+        sorted.forEach(([n, s], i) => {
+          const wr = s.w + s.l > 0 ? ((s.w / (s.w + s.l)) * 100).toFixed(0) : 0;
+          t2 += `${i + 1}. ${n.padEnd(16)} ${s.w}W ${s.l}L  ${wr}%  PF:${s.pf} PA:${s.pa} Diff:${s.pf - s.pa > 0 ? "+" : ""}${s.pf - s.pa}\n`;
+        });
+        t2 += `\nMATCH LOG\n${"-".repeat(30)}\n`;
+        matchHistory.forEach((m, i) => { t2 += `${i + 1}. ${m.winner} def. ${m.loser}  ${m.winnerScore}-${m.loserScore}\n`; });
+        if (sorted.length > 0) t2 += `\nMVP: ${sorted[0][0]} (${sorted[0][1].w} wins)\n`;
+        return t2;
+      };
+
+      // Drag handlers
+      const handleDragStart = (e, idx) => { setDragIdx(idx); e.dataTransfer.effectAllowed = "move"; };
+      const handleDragOver = (e, idx) => { e.preventDefault(); setDragOverIdx(idx); };
+      const handleDragEnd = () => { setDragIdx(null); setDragOverIdx(null); setDragTarget(null); };
+      const handleDrop = (e, targetIdx) => {
+        e.preventDefault();
+        if (dragIdx === null || dragIdx === targetIdx) { setDragOverIdx(null); return; }
+        const nq = [...queue]; const [item] = nq.splice(dragIdx, 1); nq.splice(targetIdx, 0, item);
+        setQueue(nq); persist(players, nq, queueStarted, currentMatch, matchHistory, winStreaks);
+        setDragIdx(null); setDragOverIdx(null);
+      };
+      const handleCourtDragOver = (e, side) => { e.preventDefault(); setDragTarget(side); };
+      const handleCourtDragLeave = () => setDragTarget(null);
+      const handleCourtDrop = (e, side) => {
+        e.preventDefault(); if (dragIdx !== null) swapOnCourt(dragIdx, side);
+        setDragTarget(null); setDragIdx(null);
+      };
+
+      const gameOver = currentMatch ? checkGameOver(currentMatch.score1, currentMatch.score2) : 0;
+      const leaderboard = Object.entries(allTimeStats)
+        .map(([name, s]) => ({
+          name, wins: s.wins, losses: s.losses,
+          wr: s.wins + s.losses > 0 ? ((s.wins / (s.wins + s.losses)) * 100).toFixed(0) : 0,
+          pf: s.pointsFor, pa: s.pointsAgainst, diff: s.pointsFor - s.pointsAgainst, h2h: s.h2h || {},
+        })).sort((a, b) => b.wins - a.wins || b.diff - a.diff);
+
+      if (!loaded) return (
+        <div style={{ background: c.bg, minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ color: c.accent, fontFamily: "'DM Sans', sans-serif", fontSize: 18 }}>Loading...</div>
+        </div>
+      );
+
+      return (
+        <div style={{ background: c.bg, minHeight: "100vh", fontFamily: "'DM Sans', sans-serif", color: c.text, display: "flex", flexDirection: "column" }}>
+          <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700;800&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet" />
+          <style>{`
+            .q-row:hover { background: ${c.cardHover} !important; }
+            .court-drop:hover { background: rgba(255,255,255,0.04) !important; }
+            ::selection { background: ${c.accent}40; }
+            input::placeholder { color: ${c.textMute}; }
+            input { text-transform: capitalize; }
+          `}</style>
+
+          {/* Header */}
+          <header style={{
+            padding: "12px 24px", display: "flex", alignItems: "center", justifyContent: "space-between",
+            borderBottom: `1px solid ${c.border}`, background: c.bg2, flexShrink: 0, flexWrap: "wrap", gap: 10
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div style={{
+                width: 32, height: 32, borderRadius: 7,
+                background: `linear-gradient(135deg, ${c.accent}, ${c.accentDim})`,
+                display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15,
+              }}>🏸</div>
+              <div>
+                <h1 style={{ margin: 0, fontSize: 16, fontWeight: 700, letterSpacing: -0.3 }}>Saturday League</h1>
+                <p style={{ margin: 0, fontSize: 9, color: c.textDim, letterSpacing: 1.5, textTransform: "uppercase" }}>Singles · BWF · Best of 1</p>
+              </div>
+            </div>
+            
+            {/* Added Reset All Button Here */}
+            <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+              <Badge color={c.accent}>{players.length} players</Badge>
+              <Badge color={c.warm}>{matchHistory.length} matches</Badge>
+              {matchHistory.length > 0 && <Btn onClick={endDay} v="warning" small>📋 End Day</Btn>}
+              <Btn onClick={resetAll} v="danger" small>⚠️ Reset All</Btn>
+            </div>
+          </header>
+
+          {/* Tabs */}
+          <nav style={{ display: "flex", padding: "0 24px", borderBottom: `1px solid ${c.border}`, background: c.bg2, flexShrink: 0 }}>
+            {[["queue", "Queue"], ["match", "Match"], ["history", "History"], ["leaderboard", "Leaderboard"]].map(([k, label]) => (
+              <button key={k} onClick={() => setTab(k)} style={{
+                padding: "11px 18px", background: "none", border: "none",
+                color: tab === k ? c.accent : c.textDim,
+                fontWeight: tab === k ? 700 : 500, fontSize: 13, cursor: "pointer",
+                borderBottom: tab === k ? `2px solid ${c.accent}` : "2px solid transparent",
+                fontFamily: "'DM Sans', sans-serif", transition: "all 0.15s",
+              }}>{label}{k === "match" && currentMatch ? " ●" : ""}</button>
+            ))}
+          </nav>
+
+          {/* Content */}
+          <main style={{ padding: tab === "match" ? "0" : "20px 24px", maxWidth: tab === "match" ? "100%" : 880, margin: "0 auto", width: "100%", flex: 1, display: "flex", flexDirection: "column" }}>
+
+            {/* ===== QUEUE TAB ===== */}
+            {tab === "queue" && (
+              <div>
+                {/* Tiny court preview — just names, drag targets */}
+                {currentMatch && (
+                  <div style={{
+                    marginBottom: 16, display: "flex", borderRadius: 8, overflow: "hidden",
+                    border: `2px solid ${c.court.border}`, height: 42,
+                    background: `linear-gradient(90deg, ${c.court.dark}, ${c.court.base}, ${c.court.dark}, ${c.court.base}, ${c.court.dark})`,
+                    boxShadow: "0 2px 10px rgba(0,0,0,0.2)",
+                  }}>
+                    {/* Left drop zone */}
+                    <div
+                      onDragOver={(e) => handleCourtDragOver(e, "left")}
+                      onDragLeave={handleCourtDragLeave}
+                      onDrop={(e) => handleCourtDrop(e, "left")}
+                      onClick={() => setTab("match")}
+                      style={{
+                        flex: 1, display: "flex", alignItems: "center", justifyContent: "center",
+                        cursor: "pointer", transition: "background 0.15s",
+                        background: dragTarget === "left" ? "rgba(138,171,122,0.25)" : "transparent",
+                        borderRight: "1.5px solid #fff",
+                      }}
+                    >
+                      <span style={{ fontSize: 13, fontWeight: 700, color: "#3a2815" }}>{currentMatch.player1}</span>
+                    </div>
+                    {/* Right drop zone */}
+                    <div
+                      onDragOver={(e) => handleCourtDragOver(e, "right")}
+                      onDragLeave={handleCourtDragLeave}
+                      onDrop={(e) => handleCourtDrop(e, "right")}
+                      onClick={() => setTab("match")}
+                      style={{
+                        flex: 1, display: "flex", alignItems: "center", justifyContent: "center",
+                        cursor: "pointer", transition: "background 0.15s",
+                        background: dragTarget === "right" ? "rgba(138,171,122,0.25)" : "transparent",
+                        borderLeft: "1.5px solid #fff",
+                      }}
+                    >
+                      <span style={{ fontSize: 13, fontWeight: 700, color: "#3a2815" }}>{currentMatch.player2}</span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Sign In */}
+                <section style={{ marginBottom: 16 }}>
+                  <h2 style={{ fontSize: 11, fontWeight: 600, color: c.textDim, letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 8 }}>Sign In</h2>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <input value={nameInput} onChange={e => setNameInput(e.target.value)}
+                      onKeyDown={e => e.key === "Enter" && addPlayer()}
+                      placeholder="Player name..."
+                      style={{
+                        flex: 1, padding: "9px 14px", borderRadius: 8,
+                        border: `1px solid ${c.border}`, background: c.surface, color: c.text,
+                        fontSize: 14, fontFamily: "'DM Sans', sans-serif", outline: "none",
+                      }}
+                    />
+                    <Btn onClick={addPlayer}>+ Add</Btn>
+                  </div>
+                </section>
+                
+                {/* Pre-start Registered Players List */}
+                {!queueStarted && players.length > 0 && (
+                  <section style={{ marginBottom: 16 }}>
+                    <h2 style={{ fontSize: 11, fontWeight: 600, color: c.textDim, letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 8 }}>
+                      Registered Players ({players.length})
+                    </h2>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                      {players.map(p => (
+                        <div key={p.name} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 10px", borderRadius: 8, background: c.card, border: `1px solid ${c.border}` }}>
+                          <span style={{ fontWeight: 600, fontSize: 13 }}>{p.name}</span>
+                          <IconBtn onClick={() => removeFromQueue(p.name)} color={c.red}>×</IconBtn>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                )}
+
+                {/* Actions */}
+                <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+                  <Btn onClick={generateQueue} disabled={players.length < 2}>🎲 Shuffle Queue</Btn>
+                  <Btn onClick={startNextMatch} disabled={queue.length < 2 || !!currentMatch} v="warm">▶ Start Match</Btn>
+                </div>
+
+                {/* Queue list */}
+                {queue.length > 0 && (
+                  <section>
+                    <h2 style={{ fontSize: 11, fontWeight: 600, color: c.textDim, letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 8 }}>
+                      Queue ({queue.length})
+                    </h2>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                      {queue.map((p, i) => {
+                        const nextIdx = getNextPlayers(queue);
+                        const isNext = nextIdx.includes(i);
+                        return (
+                          <div key={p.name + i} className="q-row" draggable
+                            onDragStart={(e) => handleDragStart(e, i)}
+                            onDragOver={(e) => handleDragOver(e, i)}
+                            onDrop={(e) => handleDrop(e, i)}
+                            onDragEnd={handleDragEnd}
+                            style={{
+                              display: "flex", alignItems: "center", gap: 8,
+                              padding: "7px 10px", borderRadius: 8,
+                              background: dragOverIdx === i ? c.accent + "15" : isNext ? c.accent + "0a" : c.card,
+                              border: `1px solid ${dragOverIdx === i ? c.accent + "40" : isNext ? c.accent + "20" : c.border}`,
+                              opacity: p.paused ? 0.5 : dragIdx === i ? 0.4 : 1,
+                              cursor: "grab", transition: "all 0.1s",
+                            }}>
+                            <span style={{ fontSize: 13, color: c.textMute, userSelect: "none" }}>⠿</span>
+                            <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 11, color: isNext ? c.accent : c.textMute, fontWeight: 500, width: 22 }}>#{i + 1}</span>
+                            <span style={{
+                              fontWeight: 600, fontSize: 13, flex: 1,
+                              textDecoration: p.paused ? "line-through" : "none",
+                              color: p.paused ? c.textDim : c.text,
+                            }}>{p.name}</span>
+                            {isNext && !p.paused && <Badge color={c.accent}>Next</Badge>}
+                            {p.paused && <Badge color={c.yellow}>Paused</Badge>}
+                            {winStreaks[p.name] > 0 && <Badge color={c.warm}>🔥{winStreaks[p.name]}</Badge>}
+                            <div style={{ display: "flex", gap: 1 }}>
+                              <IconBtn onClick={() => moveInQueue(i, -1)} title="Up" color={c.textDim}>↑</IconBtn>
+                              <IconBtn onClick={() => moveInQueue(i, 1)} title="Down" color={c.textDim}>↓</IconBtn>
+                              <IconBtn onClick={() => togglePause(p.name)} title={p.paused ? "Unpause" : "Pause"} color={c.yellow}>{p.paused ? "▶" : "⏸"}</IconBtn>
+                              <IconBtn onClick={() => removeFromQueue(p.name)} title="Remove" color={c.red}>×</IconBtn>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </section>
+                )}
+              </div>
+            )}
+
+            {/* ===== MATCH TAB (full screen scoreboard) ===== */}
+            {tab === "match" && (
+              <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
+                {!currentMatch ? (
+                  <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 14 }}>
+                    <p style={{ fontSize: 16, color: c.textDim }}>No match in progress</p>
+                    <Btn onClick={() => setTab("queue")}>Go to Queue</Btn>
+                  </div>
+                ) : (() => {
+                  const sw = Math.floor(Math.max(currentMatch.score1, currentMatch.score2) / 11) % 2 === 1;
+                  const lp = sw ? 2 : 1, rp = sw ? 1 : 2;
+                  const ln = lp === 1 ? currentMatch.player1 : currentMatch.player2;
+                  const rn = rp === 1 ? currentMatch.player1 : currentMatch.player2;
+                  const ls = lp === 1 ? currentMatch.score1 : currentMatch.score2;
+                  const rs = rp === 1 ? currentMatch.score1 : currentMatch.score2;
+                  const lw = (gameOver === 1 && lp === 1) || (gameOver === 2 && lp === 2);
+                  const rw = (gameOver === 1 && rp === 1) || (gameOver === 2 && rp === 2);
+
+                  return (
+                    <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
+                      {/* Court fills available space */}
+                      <div style={{
+                        flex: 1, position: "relative", margin: "12px 16px", borderRadius: 14, overflow: "hidden",
+                        background: `linear-gradient(180deg, ${c.court.base} 0%, ${c.court.dark} 25%, ${c.court.base} 50%, ${c.court.dark} 75%, ${c.court.base} 100%)`,
+                        border: `3px solid ${c.court.border}`,
+                        boxShadow: "0 6px 32px rgba(0,0,0,0.3), inset 0 0 40px rgba(0,0,0,0.04)",
+                        minHeight: 300,
+                      }}>
+                        {/* Wood grain */}
+                        <div style={{ position: "absolute", inset: 0, background: "repeating-linear-gradient(90deg, transparent, transparent 48px, rgba(0,0,0,0.025) 48px, rgba(0,0,0,0.025) 50px)", pointerEvents: "none" }} />
+                        <div style={{ position: "absolute", inset: 0, background: "linear-gradient(135deg, rgba(255,255,255,0.14) 0%, transparent 40%, rgba(255,255,255,0.06) 60%, transparent 100%)", pointerEvents: "none" }} />
+                        {/* Boundary */}
+                        <div style={{ position: "absolute", top: 14, left: 14, right: 14, bottom: 14, border: "2.5px solid #fff", borderRadius: 3, pointerEvents: "none" }} />
+                        {/* Net */}
+                        <div style={{ position: "absolute", top: 14, bottom: 14, left: "50%", transform: "translateX(-50%)", width: 3, background: "#fff" }} />
+
+                        {/* Left side tap to score */}
+                        <div onClick={() => !gameOver && updateScore(lp, 1)}
+                          className="court-drop"
+                          style={{
+                            position: "absolute", top: 0, bottom: 0, left: 0, width: "50%",
+                            display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+                            cursor: gameOver ? "default" : "pointer", zIndex: 2, transition: "background 0.15s",
+                          }}>
+                          <div style={{ fontSize: 26, fontWeight: 700, color: lw ? "#6b5a20" : "#4a3520", textShadow: "0 1px 0 rgba(255,255,255,0.3)", marginBottom: 8 }}>{ln}</div>
+                          {winStreaks[ln] > 0 && <div style={{ fontSize: 12, color: "#b07840", fontWeight: 600, marginBottom: 8 }}>🔥 {winStreaks[ln]} streak</div>}
+                          <div style={{
+                            fontSize: 100, fontWeight: 800, fontFamily: "'DM Mono', monospace",
+                            color: lw ? "#6b5a20" : "#3a2815", textShadow: "0 3px 0 rgba(255,255,255,0.15)", lineHeight: 1,
+                          }}>{ls}</div>
+                          {!gameOver && <div style={{ marginTop: 14, fontSize: 11, color: "rgba(60,30,10,0.28)", fontWeight: 600, letterSpacing: 1.5 }}>TAP TO SCORE</div>}
+                        </div>
+
+                        {/* Right side tap to score */}
+                        <div onClick={() => !gameOver && updateScore(rp, 1)}
+                          className="court-drop"
+                          style={{
+                            position: "absolute", top: 0, bottom: 0, right: 0, width: "50%",
+                            display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+                            cursor: gameOver ? "default" : "pointer", zIndex: 2, transition: "background 0.15s",
+                          }}>
+                          <div style={{ fontSize: 26, fontWeight: 700, color: rw ? "#6b5a20" : "#4a3520", textShadow: "0 1px 0 rgba(255,255,255,0.3)", marginBottom: 8 }}>{rn}</div>
+                          {winStreaks[rn] > 0 && <div style={{ fontSize: 12, color: "#b07840", fontWeight: 600, marginBottom: 8 }}>🔥 {winStreaks[rn]} streak</div>}
+                          <div style={{
+                            fontSize: 100, fontWeight: 800, fontFamily: "'DM Mono', monospace",
+                            color: rw ? "#6b5a20" : "#3a2815", textShadow: "0 3px 0 rgba(255,255,255,0.15)", lineHeight: 1,
+                          }}>{rs}</div>
+                          {!gameOver && <div style={{ marginTop: 14, fontSize: 11, color: "rgba(60,30,10,0.28)", fontWeight: 600, letterSpacing: 1.5 }}>TAP TO SCORE</div>}
+                        </div>
+                      </div>
+
+                      {/* Bottom bar */}
+                      <div style={{
+                        display: "flex", justifyContent: "space-between", alignItems: "center",
+                        padding: "10px 20px", borderTop: `1px solid ${c.border}`, flexShrink: 0,
+                      }}>
+                        <Btn onClick={() => updateScore(lp, -1)} v="ghost" small>↩ Undo {ln}</Btn>
+                        {gameOver > 0 ? (
+                          <Btn onClick={finishMatch} v="warm">
+                            🏆 {gameOver === 1 ? currentMatch.player1 : currentMatch.player2} wins — Confirm
+                          </Btn>
+                        ) : (
+                          <span style={{ fontSize: 11, color: c.textMute }}>First to 21 · Win by 2 · Cap 30</span>
+                        )}
+                        <Btn onClick={() => updateScore(rp, -1)} v="ghost" small>Undo {rn} ↩</Btn>
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
+
+            {/* ===== HISTORY TAB ===== */}
+            {tab === "history" && (
+              <div>
+                <h2 style={{ fontSize: 11, fontWeight: 600, color: c.textDim, letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 10 }}>Today's Matches</h2>
+                {matchHistory.length === 0 ? <p style={{ color: c.textDim, fontSize: 13 }}>No matches yet.</p> : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    {[...matchHistory].reverse().map((m, i) => (
+                      <div key={m.id} style={{
+                        display: "flex", alignItems: "center", padding: "10px 14px",
+                        borderRadius: 8, background: c.card, border: `1px solid ${c.border}`, gap: 10,
+                      }}>
+                        <span style={{ fontFamily: "'DM Mono', monospace", fontSize: 10, color: c.textMute, width: 22 }}>#{matchHistory.length - i}</span>
+                        <span style={{ fontWeight: 600, color: c.accent, flex: 1, textAlign: "right", fontSize: 13 }}>{m.winner}</span>
+                        <span style={{ fontFamily: "'DM Mono', monospace", fontWeight: 600, fontSize: 14, padding: "2px 12px", borderRadius: 6, background: c.surface }}>{m.winnerScore}–{m.loserScore}</span>
+                        <span style={{ fontWeight: 500, color: c.textDim, flex: 1, fontSize: 13 }}>{m.loser}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ===== LEADERBOARD TAB ===== */}
+            {tab === "leaderboard" && (
+              <div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                  <h2 style={{ fontSize: 11, fontWeight: 600, color: c.textDim, letterSpacing: 1.5, textTransform: "uppercase", margin: 0 }}>All-Time Leaderboard</h2>
+                  <Btn onClick={() => { setAllTimeStats({}); persistStats({}); }} v="danger" small>Reset Stats</Btn>
+                </div>
+                {leaderboard.length === 0 ? <p style={{ color: c.textDim, fontSize: 13 }}>No stats yet.</p> : (
+                  <>
+                    <div style={{ borderRadius: 10, overflow: "hidden", border: `1px solid ${c.border}`, marginBottom: 20 }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                        <thead><tr style={{ background: c.surface }}>
+                          {["#","Player","W","L","Win%","PF","PA","+/−"].map(h => (
+                            <th key={h} style={{ padding: "9px 8px", textAlign: h === "Player" ? "left" : "center", color: c.textDim, fontWeight: 600, fontSize: 9, letterSpacing: 1.5, textTransform: "uppercase" }}>{h}</th>
+                          ))}
+                        </tr></thead>
+                        <tbody>{leaderboard.map((p, i) => (
+                          <tr key={p.name} onClick={() => setH2hPlayer(h2hPlayer === p.name ? null : p.name)}
+                            style={{ background: h2hPlayer === p.name ? c.accent + "10" : i % 2 === 0 ? c.card : "transparent", cursor: "pointer" }}>
+                            <td style={{ padding: "9px 8px", textAlign: "center", fontWeight: 700, color: i < 3 ? c.warm : c.textMute }}>{i + 1}</td>
+                            <td style={{ padding: "9px 8px", fontWeight: 600 }}>{p.name}</td>
+                            <td style={{ padding: "9px 8px", textAlign: "center", color: c.accent, fontWeight: 600 }}>{p.wins}</td>
+                            <td style={{ padding: "9px 8px", textAlign: "center", color: c.red, fontWeight: 600 }}>{p.losses}</td>
+                            <td style={{ padding: "9px 8px", textAlign: "center" }}>{p.wr}%</td>
+                            <td style={{ padding: "9px 8px", textAlign: "center", fontFamily: "'DM Mono', monospace", fontSize: 11 }}>{p.pf}</td>
+                            <td style={{ padding: "9px 8px", textAlign: "center", fontFamily: "'DM Mono', monospace", fontSize: 11 }}>{p.pa}</td>
+                            <td style={{ padding: "9px 8px", textAlign: "center", fontWeight: 700, color: p.diff > 0 ? c.accent : p.diff < 0 ? c.red : c.textDim, fontFamily: "'DM Mono', monospace", fontSize: 11 }}>{p.diff > 0 ? "+" : ""}{p.diff}</td>
+                          </tr>
+                        ))}</tbody>
+                      </table>
+                    </div>
+                    {h2hPlayer && (
+                      <section>
+                        <h3 style={{ fontSize: 11, fontWeight: 600, color: c.warm, letterSpacing: 1, textTransform: "uppercase", marginBottom: 8 }}>{h2hPlayer} — Head to Head</h3>
+                        {(() => {
+                          const entries = Object.entries(allTimeStats[h2hPlayer]?.h2h || {});
+                          if (!entries.length) return <p style={{ color: c.textDim, fontSize: 12 }}>No H2H data.</p>;
+                          return (
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                              {entries.sort((a, b) => b[1].w + b[1].l - (a[1].w + a[1].l)).map(([opp, r]) => (
+                                <div key={opp} style={{ padding: "8px 12px", borderRadius: 8, background: c.card, border: `1px solid ${c.border}`, minWidth: 110 }}>
+                                  <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 2 }}>vs {opp}</div>
+                                  <span style={{ color: c.accent, fontWeight: 600, fontSize: 12 }}>{r.w}W</span>
+                                  <span style={{ color: c.textMute, margin: "0 4px" }}>–</span>
+                                  <span style={{ color: c.red, fontWeight: 600, fontSize: 12 }}>{r.l}L</span>
+                                </div>
+                              ))}
+                            </div>
+                          );
+                        })()}
+                      </section>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+          </main>
+
+          {/* Summary Modal */}
+          {showSummary && (
+            <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100, backdropFilter: "blur(4px)" }}>
+              <div style={{ background: c.bg2, borderRadius: 16, padding: 24, maxWidth: 580, width: "90%", maxHeight: "80vh", overflow: "auto", border: `1px solid ${c.border}`, boxShadow: "0 20px 60px rgba(0,0,0,0.5)" }}>
+                <h2 style={{ margin: "0 0 14px", fontSize: 17, fontWeight: 700, color: c.accent }}>📋 Day Summary</h2>
+                <pre style={{ background: c.surface, padding: 14, borderRadius: 10, fontSize: 11, fontFamily: "'DM Mono', monospace", color: c.textMed, lineHeight: 1.6, whiteSpace: "pre-wrap", border: `1px solid ${c.border}`, maxHeight: 360, overflow: "auto" }}>{getSummaryText()}</pre>
+                <div style={{ display: "flex", gap: 8, marginTop: 14, justifyContent: "flex-end", flexWrap: "wrap" }}>
+                  <Btn onClick={() => navigator.clipboard.writeText(getSummaryText())} v="primary" small>📋 Copy</Btn>
+                  <Btn onClick={() => {
+                    const b = new Blob([getSummaryText()], { type: "text/plain" });
+                    const u = URL.createObjectURL(b); const a = document.createElement("a");
+                    a.href = u; a.download = `saturday-league-${new Date().toISOString().slice(0, 10)}.txt`;
+                    a.click(); URL.revokeObjectURL(u);
+                  }} v="warm" small>💾 Download</Btn>
+                  <Btn onClick={() => setShowSummary(false)} v="ghost" small>Back</Btn>
+                  <Btn onClick={closeSummary} v="danger" small>End & Reset</Btn>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
