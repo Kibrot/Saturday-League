@@ -1,3 +1,20 @@
+If you change the cap to exactly 1 win, you are essentially transforming the queue into a **Continuous Round Robin** tournament. Because everyone leaves the court after a single game, the line will move very fast, but the "syncing" problem becomes guaranteed: Player A and Player B leave the court at the exact same time, enter the back of the queue together, and will inevitably end up at the front together again.
+
+To make this perfectly fair and guarantee everyone plays everyone evenly, the best approach is to implement a **"Head-to-Head (H2H) Minimizer" algorithm**. 
+
+### How the H2H Minimizer Works
+Instead of blindly grabbing the #1 and #2 people in line, the app will now do this:
+1. It takes the #1 person at the front of the queue (Player A).
+2. It looks at the #2 person (Player B) and checks the session history. *How many times have they played today?*
+3. It then checks Player C, Player D, etc.
+4. It actively pairs Player A with whoever they have played the **fewest** number of times. 
+5. If there is a tie (e.g., Player A hasn't played Player B *or* Player C), it defaults back to queue order and picks the person who has been waiting the longest.
+
+Because the person skipped (Player B) immediately slides up to the #1 spot for the next available court, nobody gets stranded, and the system dynamically balances the matchups for the entire room.
+
+Here is your updated **Saturday League Singles** app. The default cap is now set to 1, and the matchmaking engine has been completely rewritten to scan the match history before pulling anyone onto a court.
+
+```html
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -9,8 +26,21 @@
   <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/mobile-drag-drop@2.3.0-rc.2/default.css">
+  <script src="https://cdn.jsdelivr.net/npm/mobile-drag-drop@2.3.0-rc.2/index.min.js"></script>
+  <script>
+    document.addEventListener("DOMContentLoaded", function() {
+      MobileDragDrop.polyfill({ holdToDrag: 250 });
+      window.addEventListener('touchmove', function() {}, {passive: false});
+    });
+  </script>
+
   <style>
-    body, html { margin: 0; padding: 0; height: 100%; background: #1a1612; }
+    body, html { 
+      margin: 0; padding: 0; height: 100%; background: #1a1612; 
+      -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+    }
+    input, pre { -webkit-user-select: auto; user-select: auto; }
   </style>
 </head>
 <body>
@@ -107,36 +137,66 @@
       const [dragOverIdx, setDragOverIdx] = useState(null);
       const [dragTarget, setDragTarget] = useState(null);
 
+      // Default win streak cap set to 1
+      const [winStreakCap, setWinStreakCap] = useState(1);
+
       useEffect(() => {
         (async () => {
           const stats = await load("allTimeStats", {});
           const session = await load("session", null);
           setAllTimeStats(stats);
           if (session) {
-            setPlayers(session.players || []); setQueue(session.queue || []);
+            setPlayers(session.players || []); 
+            setQueue(session.queue || []);
             setQueueStarted(session.queueStarted || false);
             setCurrentMatch(session.currentMatch || null);
-            setMatchHistory(session.matchHistory || []); setWinStreaks(session.winStreaks || {});
+            setMatchHistory(session.matchHistory || []); 
+            setWinStreaks(session.winStreaks || {});
+            setWinStreakCap(session.winStreakCap || 1);
           }
           setLoaded(true);
         })();
       }, []);
 
-      const persist = useCallback((p, q, qs, cm, mh, ws) => {
-        save("session", { players: p, queue: q, queueStarted: qs, currentMatch: cm, matchHistory: mh, winStreaks: ws });
+      const persist = useCallback((p, q, qs, cm, mh, ws, cap) => {
+        save("session", { players: p, queue: q, queueStarted: qs, currentMatch: cm, matchHistory: mh, winStreaks: ws, winStreakCap: cap });
       }, []);
       const persistStats = useCallback((s) => save("allTimeStats", s), []);
+
+      const getSessionGames = (playerName) => matchHistory.filter(m => m.winner === playerName || m.loser === playerName).length;
 
       const addPlayer = () => {
         const raw = nameInput.trim();
         if (!raw) return;
         const name = raw.charAt(0).toUpperCase() + raw.slice(1);
         if (players.find(p => p.name.toLowerCase() === name.toLowerCase())) return;
-        const entry = { name, paused: false };
+        
+        const isLate = queueStarted;
+        const entry = { name, paused: false, lateJoin: isLate };
         const np = [...players, entry];
-        const nq = queueStarted ? [...queue, entry] : queue;
+        
+        let nq = [...queue];
+        if (queueStarted) {
+          let insertIdx = nq.length;
+          for (let i = 0; i < nq.length; i++) {
+            const p = nq[i];
+            const pGames = getSessionGames(p.name);
+            const isStreak = (winStreaks[p.name] || 0) > 0;
+            const isLateUnplayed = p.lateJoin && pGames === 0;
+            
+            if (isStreak) continue; 
+            if (!isLateUnplayed) {
+              insertIdx = i;
+              break;
+            }
+          }
+          nq.splice(insertIdx, 0, entry);
+        } else {
+          nq.push(entry);
+        }
+        
         setPlayers(np); setQueue(nq); setNameInput("");
-        persist(np, nq, queueStarted, currentMatch, matchHistory, winStreaks);
+        persist(np, nq, queueStarted, currentMatch, matchHistory, winStreaks, winStreakCap);
       };
 
       const removeFromQueue = (name) => {
@@ -144,41 +204,75 @@
         const nq = queue.filter(p => p.name !== name);
         setPlayers(np);
         setQueue(nq); 
-        persist(np, nq, queueStarted, currentMatch, matchHistory, winStreaks);
+        persist(np, nq, queueStarted, currentMatch, matchHistory, winStreaks, winStreakCap);
       };
 
       const togglePause = (name) => {
         const nq = queue.map(p => p.name === name ? { ...p, paused: !p.paused } : p);
-        setQueue(nq); persist(players, nq, queueStarted, currentMatch, matchHistory, winStreaks);
+        setQueue(nq); persist(players, nq, queueStarted, currentMatch, matchHistory, winStreaks, winStreakCap);
       };
 
       const moveInQueue = (idx, dir) => {
         const nq = [...queue]; const t2 = idx + dir;
         if (t2 < 0 || t2 >= nq.length) return;
         [nq[idx], nq[t2]] = [nq[t2], nq[idx]];
-        setQueue(nq); persist(players, nq, queueStarted, currentMatch, matchHistory, winStreaks);
+        setQueue(nq); persist(players, nq, queueStarted, currentMatch, matchHistory, winStreaks, winStreakCap);
       };
 
       const generateQueue = () => {
         const shuffled = shuffle(players);
         setQueue(shuffled); setQueueStarted(true);
         setCurrentMatch(null); setMatchHistory([]); setWinStreaks({});
-        persist(players, shuffled, true, null, [], {});
+        persist(players, shuffled, true, null, [], {}, winStreakCap);
       };
 
-      const getNextPlayers = (q) => {
-        const r = [];
-        for (let i = 0; i < q.length; i++) { if (!q[i].paused) { r.push(i); if (r.length === 2) break; } }
-        return r;
+      // ─── H2H Minimizer Engine ───
+      const getNextPlayers = (q, history) => {
+        const unpaused = [];
+        for (let i = 0; i < q.length; i++) { 
+          if (!q[i].paused) unpaused.push(i); 
+        }
+        if (unpaused.length < 2) return [];
+        
+        // Player 1 is strictly whoever has been waiting longest
+        const p1Idx = unpaused[0];
+        const p1Name = q[p1Idx].name;
+        
+        // Scan queue for the opponent they have played the LEAST today
+        let bestP2Idx = unpaused[1];
+        let minMatches = Infinity;
+
+        for (let j = 1; j < unpaused.length; j++) {
+           const p2Idx = unpaused[j];
+           const p2Name = q[p2Idx].name;
+           
+           let matchCount = 0;
+           for (const m of history) {
+              if ((m.winner === p1Name && m.loser === p2Name) || (m.winner === p2Name && m.loser === p1Name)) {
+                 matchCount++;
+              }
+           }
+
+           if (matchCount < minMatches) {
+               minMatches = matchCount;
+               bestP2Idx = p2Idx;
+           }
+           
+           // If they have never played, lock it in immediately to save time
+           if (minMatches === 0) break;
+        }
+        
+        return [p1Idx, bestP2Idx];
       };
 
       const startNextMatch = () => {
-        const idx = getNextPlayers(queue);
+        const idx = getNextPlayers(queue, matchHistory);
         if (idx.length < 2) return;
+        
         const match = { id: genId(), player1: queue[idx[0]].name, player2: queue[idx[1]].name, score1: 0, score2: 0 };
         const nq = queue.filter((_, i) => !idx.includes(i));
         setCurrentMatch(match); setQueue(nq);
-        persist(players, nq, queueStarted, match, matchHistory, winStreaks);
+        persist(players, nq, queueStarted, match, matchHistory, winStreaks, winStreakCap);
         setTab("match");
       };
 
@@ -186,12 +280,15 @@
         if (!currentMatch) return;
         const incoming = queue[queueIdx];
         const outName = side === "left" ? currentMatch.player1 : currentMatch.player2;
-        const nq = [...queue.filter((_, i) => i !== queueIdx), { name: outName, paused: false }];
+        
+        const outPlayerObj = players.find(p => p.name === outName) || { name: outName, paused: false, lateJoin: false };
+        const nq = [...queue.filter((_, i) => i !== queueIdx), { ...outPlayerObj, paused: false }];
+        
         const nm = side === "left"
           ? { ...currentMatch, player1: incoming.name, score1: 0, score2: 0 }
           : { ...currentMatch, player2: incoming.name, score1: 0, score2: 0 };
         setCurrentMatch(nm); setQueue(nq);
-        persist(players, nq, queueStarted, nm, matchHistory, winStreaks);
+        persist(players, nq, queueStarted, nm, matchHistory, winStreaks, winStreakCap);
         setDragIdx(null); setDragTarget(null);
       };
 
@@ -201,7 +298,7 @@
           const key = player === 1 ? "score1" : "score2";
           const ns = Math.max(0, m[key] + delta);
           const u = { ...m, [key]: ns };
-          persist(players, queue, queueStarted, u, matchHistory, winStreaks);
+          persist(players, queue, queueStarted, u, matchHistory, winStreaks, winStreakCap);
           return u;
         });
       };
@@ -215,11 +312,21 @@
         const wsc = w === 1 ? currentMatch.score1 : currentMatch.score2;
         const lsc = w === 1 ? currentMatch.score2 : currentMatch.score1;
         const result = { ...currentMatch, winner: wn, loser: ln, winnerScore: wsc, loserScore: lsc, timestamp: Date.now() };
+        
         const nh = [...matchHistory, result];
         const nws = { ...winStreaks }; nws[wn] = (nws[wn] || 0) + 1; nws[ln] = 0;
+        
+        const winnerObj = players.find(p => p.name === wn) || { name: wn, paused: false, lateJoin: false };
+        const loserObj = players.find(p => p.name === ln) || { name: ln, paused: false, lateJoin: false };
+
         let nq = [...queue];
-        if (nws[wn] >= 2) { nq = [...nq, { name: wn, paused: false }, { name: ln, paused: false }]; nws[wn] = 0; }
-        else { nq = [{ name: wn, paused: false }, ...nq, { name: ln, paused: false }]; }
+        if (nws[wn] >= winStreakCap) { 
+          nq = [...nq, { ...winnerObj, paused: false }, { ...loserObj, paused: false }]; 
+          nws[wn] = 0; 
+        } else { 
+          nq = [{ ...winnerObj, paused: false }, ...nq, { ...loserObj, paused: false }]; 
+        }
+        
         const ns = { ...allTimeStats };
         for (const n of [wn, ln]) { if (!ns[n]) ns[n] = { wins: 0, losses: 0, pointsFor: 0, pointsAgainst: 0, h2h: {} }; }
         ns[wn].wins++; ns[wn].pointsFor += wsc; ns[wn].pointsAgainst += lsc;
@@ -227,9 +334,10 @@
         if (!ns[wn].h2h[ln]) ns[wn].h2h[ln] = { w: 0, l: 0 };
         if (!ns[ln].h2h[wn]) ns[ln].h2h[wn] = { w: 0, l: 0 };
         ns[wn].h2h[ln].w++; ns[ln].h2h[wn].l++;
+        
         setMatchHistory(nh); setWinStreaks(nws); setQueue(nq);
         setCurrentMatch(null); setAllTimeStats(ns);
-        persist(players, nq, queueStarted, null, nh, nws); persistStats(ns);
+        persist(players, nq, queueStarted, null, nh, nws, winStreakCap); persistStats(ns);
         setTab("queue");
       };
 
@@ -238,15 +346,14 @@
       const closeSummary = () => {
         setShowSummary(false); setPlayers([]); setQueue([]); setQueueStarted(false);
         setCurrentMatch(null); setMatchHistory([]); setWinStreaks({});
-        persist([], [], false, null, [], {});
+        persist([], [], false, null, [], {}, winStreakCap);
       };
 
-      // NEW: Reset All function for the top right button
       const resetAll = () => {
         if (window.confirm("Are you sure you want to reset the entire session? This will clear the queue and match history.")) {
           setPlayers([]); setQueue([]); setQueueStarted(false);
           setCurrentMatch(null); setMatchHistory([]); setWinStreaks({});
-          persist([], [], false, null, [], {});
+          persist([], [], false, null, [], {}, winStreakCap);
           setTab("queue");
         }
       };
@@ -285,7 +392,7 @@
         e.preventDefault();
         if (dragIdx === null || dragIdx === targetIdx) { setDragOverIdx(null); return; }
         const nq = [...queue]; const [item] = nq.splice(dragIdx, 1); nq.splice(targetIdx, 0, item);
-        setQueue(nq); persist(players, nq, queueStarted, currentMatch, matchHistory, winStreaks);
+        setQueue(nq); persist(players, nq, queueStarted, currentMatch, matchHistory, winStreaks, winStreakCap);
         setDragIdx(null); setDragOverIdx(null);
       };
       const handleCourtDragOver = (e, side) => { e.preventDefault(); setDragTarget(side); };
@@ -337,7 +444,6 @@
               </div>
             </div>
             
-            {/* Added Reset All Button Here */}
             <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
               <Badge color={c.accent}>{players.length} players</Badge>
               <Badge color={c.warm}>{matchHistory.length} matches</Badge>
@@ -406,20 +512,40 @@
                   </div>
                 )}
 
-                {/* Sign In */}
-                <section style={{ marginBottom: 16 }}>
-                  <h2 style={{ fontSize: 11, fontWeight: 600, color: c.textDim, letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 8 }}>Sign In</h2>
-                  <div style={{ display: "flex", gap: 8 }}>
-                    <input value={nameInput} onChange={e => setNameInput(e.target.value)}
-                      onKeyDown={e => e.key === "Enter" && addPlayer()}
-                      placeholder="Player name..."
-                      style={{
-                        flex: 1, padding: "9px 14px", borderRadius: 8,
-                        border: `1px solid ${c.border}`, background: c.surface, color: c.text,
-                        fontSize: 14, fontFamily: "'DM Sans', sans-serif", outline: "none",
-                      }}
-                    />
-                    <Btn onClick={addPlayer}>+ Add</Btn>
+                {/* Sign In & Settings */}
+                <section style={{ marginBottom: 16, display: "flex", gap: 16, flexWrap: "wrap" }}>
+                  <div style={{ flex: 2, minWidth: 200 }}>
+                    <h2 style={{ fontSize: 11, fontWeight: 600, color: c.textDim, letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 8 }}>Sign In</h2>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <input value={nameInput} onChange={e => setNameInput(e.target.value)}
+                        onKeyDown={e => e.key === "Enter" && addPlayer()}
+                        placeholder="Player name..."
+                        style={{
+                          flex: 1, padding: "9px 14px", borderRadius: 8,
+                          border: `1px solid ${c.border}`, background: c.surface, color: c.text,
+                          fontSize: 14, fontFamily: "'DM Sans', sans-serif", outline: "none",
+                        }}
+                      />
+                      <Btn onClick={addPlayer}>+ Add</Btn>
+                    </div>
+                  </div>
+                  
+                  <div style={{ flex: 1, minWidth: 150 }}>
+                    <h2 style={{ fontSize: 11, fontWeight: 600, color: c.textDim, letterSpacing: 1.5, textTransform: "uppercase", marginBottom: 8 }}>Win Cap</h2>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      {[1, 2, 3].map(val => (
+                        <button key={val} onClick={() => {
+                          setWinStreakCap(val);
+                          persist(players, queue, queueStarted, currentMatch, matchHistory, winStreaks, val);
+                        }} style={{
+                          padding: "7px 14px", borderRadius: 8, flex: 1,
+                          border: `1px solid ${winStreakCap === val ? c.warm : c.border}`,
+                          background: winStreakCap === val ? c.warm + "25" : c.surface, 
+                          color: winStreakCap === val ? c.warm : c.textMed,
+                          fontWeight: 600, fontSize: 13, cursor: "pointer", fontFamily: "'DM Sans', sans-serif",
+                        }}>{val}</button>
+                      ))}
+                    </div>
                   </div>
                 </section>
                 
@@ -454,8 +580,10 @@
                     </h2>
                     <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
                       {queue.map((p, i) => {
-                        const nextIdx = getNextPlayers(queue);
+                        const nextIdx = getNextPlayers(queue, matchHistory);
                         const isNext = nextIdx.includes(i);
+                        const sessionGames = getSessionGames(p.name);
+                        
                         return (
                           <div key={p.name + i} className="q-row" draggable
                             onDragStart={(e) => handleDragStart(e, i)}
@@ -477,9 +605,12 @@
                               textDecoration: p.paused ? "line-through" : "none",
                               color: p.paused ? c.textDim : c.text,
                             }}>{p.name}</span>
+                            
                             {isNext && !p.paused && <Badge color={c.accent}>Next</Badge>}
                             {p.paused && <Badge color={c.yellow}>Paused</Badge>}
+                            {p.lateJoin && sessionGames === 0 && !p.paused && <Badge color={c.yellow}>Late</Badge>}
                             {winStreaks[p.name] > 0 && <Badge color={c.warm}>🔥{winStreaks[p.name]}</Badge>}
+                            
                             <div style={{ display: "flex", gap: 1 }}>
                               <IconBtn onClick={() => moveInQueue(i, -1)} title="Up" color={c.textDim}>↑</IconBtn>
                               <IconBtn onClick={() => moveInQueue(i, 1)} title="Down" color={c.textDim}>↓</IconBtn>
@@ -696,3 +827,4 @@
   </script>
 </body>
 </html>
+```
